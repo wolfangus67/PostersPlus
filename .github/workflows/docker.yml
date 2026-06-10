@@ -6,18 +6,8 @@ on:
       - main
       - dev
     tags:
-      - 'v*'
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
-      - '.dockerignore'
-      - '.env.example'
-      - '.devcontainer/**'
-      - 'discovery_overrides.example.json'
-      - '.github/**'
-      - 'Showcase/**'
-  # Manual trigger from the Actions tab
+      - 'v*.*.*'
+  # Permet de lancer le workflow manuellement depuis l'onglet Actions
   workflow_dispatch:
 
 jobs:
@@ -48,27 +38,20 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Correction ici : dynamique selon ton compte et ton dépôt
           images: ghcr.io/${{ github.repository }}
           flavor: |
-            latest=false
+            lower=true
           tags: |
-            # main branch → :latest and :main
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            # branch push → :<branch-name> (main, dev)
-            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/heads/') }}
-            # version tag (v1.2.3) → :1.2.3, :1.2, :1
+            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          # Note : j'ai laissé uniquement linux/arm64 comme dans ton fichier, 
-          # mais si tu as un NAS x86/Intel, pense à ajouter linux/amd64 si nécessaire.
           platforms: linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
