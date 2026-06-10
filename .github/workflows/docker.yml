@@ -17,9 +17,7 @@ on:
       - 'discovery_overrides.example.json'
       - '.github/**'
       - 'Showcase/**'
-  # Manual trigger from the Actions tab — useful for re-publishing :latest
-  # after a registry-state hiccup, or when paths-ignore swallowed a push
-  # that you actually want rebuilt.
+  # Manual trigger from the Actions tab
   workflow_dispatch:
 
 jobs:
@@ -50,12 +48,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/wolfangus67/postersplus
-          # Disable the metadata-action's automatic :latest behaviour — its
-          # default (latest=auto) adds :latest to every semver tag push, so
-          # parallel v1.0.0 / v1.0.1 / v1.0.2 builds race to claim it and
-          # the last one to finish wins (which is rarely the highest version).
-          # The explicit type=raw rule below owns :latest exclusively now.
+          # Correction ici : dynamique selon ton compte et ton dépôt
+          images: ghcr.io/${{ github.repository }}
           flavor: |
             latest=false
           tags: |
@@ -73,6 +67,8 @@ jobs:
         with:
           context: .
           push: true
+          # Note : j'ai laissé uniquement linux/arm64 comme dans ton fichier, 
+          # mais si tu as un NAS x86/Intel, pense à ajouter linux/amd64 si nécessaire.
           platforms: linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
