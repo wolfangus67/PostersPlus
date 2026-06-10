@@ -40,7 +40,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           flavor: |
-            lower=true
+            lowercase=true
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
