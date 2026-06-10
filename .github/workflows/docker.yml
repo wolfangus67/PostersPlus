@@ -34,13 +34,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Étape magique : convertit le nom du dépôt en minuscules et le stocke dans une variable globale
+      - name: Downcase repository name
+        run: |
+          echo "REPO_LOWERCASE=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: |
-            lowercase=true
+          images: ghcr.io/${{ env.REPO_LOWERCASE }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
