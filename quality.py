@@ -45,10 +45,14 @@ def _extract_tokens_from_parsed_file(parsed: dict) -> set[str]:
         tokens.add("REMUX")
     elif "WEB-DL" in quality or "WEBDL" in quality:
         tokens.add("WEBDL")
-    elif res == "1080p":
-        # Correction : Force la source "WEBDL" si le fichier est en 1080p
-        # pour satisfaire les critères du profil strict "HD Web"
-        tokens.add("WEBDL")
+    else:
+        # On récupère le nom du fichier ou le titre brut (mis en majuscules)
+        raw_name = (parsed.get("filename") or parsed.get("title") or "").upper()
+        
+        # Si le nom contient "1080" OU si la résolution détectée est "1080p"
+        if "1080" in raw_name or res == "1080p":
+            # On force le token WEBDL pour valider le badge combiné "HD Web"
+            tokens.add("WEBDL")
 
     return tokens
 
