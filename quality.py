@@ -61,7 +61,7 @@ def parse_quality(quality_param: str) -> list[str]:
         return []
     tokens = []
     for token in quality_param.split(","):
-        token = token.strip()
+        token = token.strip().upper()
         if token in QUALITY_LABELS:
             tokens.append(token)
         else:
@@ -218,7 +218,7 @@ def _tokens_from_stremio_stream(
     # Resolution
     if re.search(r'\b(2160P|4K|UHD)\b', text):
         tokens.add("4K")
-    elif "1080P" in text:
+    elif re.search(r'\b1080P\b', text)
         tokens.add("1080P")
 
     # HDR — order matters: check DV before HDR10+ before HDR10
