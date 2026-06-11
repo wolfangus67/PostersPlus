@@ -31,9 +31,6 @@ def _extract_tokens_from_parsed_file(parsed: dict) -> set[str]:
         tokens.add("4K")
     elif res == "1080p":
         tokens.add("1080P")
-        # FORCE : Si c'est du 1080p, on injecte le token WEBDL pour satisfaire
-        # le profil strict "HD Web" et forcer l'affichage du badge combiné
-        tokens.add("WEBDL")
 
     visual_tags = {t.upper() for t in parsed.get("visualTags", [])}
     if "DV" in visual_tags or "DOLBY VISION" in visual_tags or "DOVI" in visual_tags:
@@ -173,12 +170,20 @@ async def fetch_quality_from_aiostreams(
 # ---------------------------------------------------------------------------
 # Stremio addon scraper (simplified quality source)
 # ---------------------------------------------------------------------------
+# Users who find AIOStreams complex can point PostersPlus directly at any
+# Stremio addon that supports the stream endpoint — Torrentio, Comet, etc.
+# They paste the manifest URL (or install link) from their configured addon
+# page; PostersPlus derives the stream base URL and calls it like a regular
+# Stremio addon client.
+
 
 def _normalize_scraper_url(url: str) -> str:
     """Normalise a user-pasted Stremio addon URL to a bare base URL."""
     url = url.strip()
+    # stremio:// install links → https://
     if url.startswith("stremio://"):
         url = "https://" + url[10:]
+    # Strip /manifest.json suffix
     if url.endswith("/manifest.json"):
         url = url[: -len("/manifest.json")]
     return url.rstrip("/")
@@ -189,7 +194,19 @@ def _tokens_from_stremio_stream(
     title: str,
     behavior_hints: dict | None = None,
 ) -> set[str]:
-    """Extract quality tokens from a single Stremio stream's name + title fields."""
+    """
+    Extract quality tokens from a single Stremio stream's name + title fields,
+    plus optional behaviorHints (Torrentio-style).
+
+    Stremio addons embed quality in either field; we scan both to be safe.
+    The name field typically looks like "Torrentio\\n4K DV" or "Comet\\n1080p".
+    The title field is usually a filename like "Movie.2023.2160p.WEB-DL.Atmos.mkv".
+
+    Torrentio also provides richer structured data in behaviorHints:
+      - bingeGroup: "torrentio|4k|BluRay REMUX|HDR"  (pipe-separated quality tokens)
+      - filename:   "Movie.2023.BDREMUX.2160p.HDR.mkv" (clean release filename)
+    Including these fields improves detection accuracy for Torrentio responses.
+    """
     binge_group = ""
     filename = ""
     if behavior_hints:
@@ -198,11 +215,13 @@ def _tokens_from_stremio_stream(
     text = f"{name}\n{title}\n{binge_group}\n{filename}".upper()
     tokens: set[str] = set()
 
+    # Resolution
     if re.search(r'\b(2160P|4K|UHD)\b', text):
         tokens.add("4K")
     elif "1080P" in text:
         tokens.add("1080P")
 
+    # HDR — order matters: check DV before HDR10+ before HDR10
     if re.search(r'\bDV\b|DOLBY.?VISION|\bDOVI\b', text):
         tokens.add("DV")
     if "HDR10+" in text:
@@ -210,15 +229,23 @@ def _tokens_from_stremio_stream(
     elif re.search(r'\bHDR10\b|\bHDR\b', text):
         tokens.add("HDR10")
 
+    # Source
     if "REMUX" in text:
         tokens.add("REMUX")
     elif re.search(r'WEB.?DL|WEBDL', text):
         tokens.add("WEBDL")
 
+    # Audio
     if "ATMOS" in text:
         tokens.add("ATMOS")
     if re.search(r'DTS.?X\b', text):
         tokens.add("DTSX")
+
+    # Fallback source : si une résolution est détectée mais aucune source connue
+    # (ex: BluRay, HDLight, HDTV), on injecte WEBDL pour permettre l'affichage
+    # du badge combiné qui requiert résolution + source.
+    if ("4K" in tokens or "1080P" in tokens) and "REMUX" not in tokens and "WEBDL" not in tokens:
+        tokens.add("WEBDL")
 
     return tokens
 
@@ -232,7 +259,17 @@ async def fetch_quality_from_scraper(
     episode: int = 1,
     release_date: str | None = None,
 ) -> "list[str] | _FetchFailed":
-    """Fetch quality tokens from a user-configured Stremio addon."""
+    """
+    Fetch quality tokens from a user-configured Stremio addon.
+
+    ``scraper_url`` should be the addon's manifest URL or base URL — e.g.
+    ``https://torrentio.stremio.ru/{config}/manifest.json`` or the bare
+    base.  Both forms are normalised before use.
+
+    Returns a list of quality tokens on success, or ``FETCH_FAILED`` on a
+    network / API error.  The caller is responsible for checking the quality
+    cache before calling this function; this function only writes on success.
+    """
     base = _normalize_scraper_url(scraper_url)
     if not base:
         return []
@@ -252,13 +289,24 @@ async def fetch_quality_from_scraper(
         resp = await client.get(url, timeout=20.0, follow_redirects=True)
 
         if resp.status_code != 200:
-            logger.warning(f"Scraper returned {resp.status_code} for {imdb_id} (url={url})")
+            logger.warning(
+                f"Scraper returned {resp.status_code} for {imdb_id} "
+                f"(url={url})"
+            )
+            # For series, fall back to a show-level lookup (no season/episode).
+            # Some addons support this and it avoids failures when a specific
+            # episode isn't indexed yet.
             if is_series:
                 fallback_url = f"{base}/stream/series/{imdb_id}.json"
-                logger.info(f"Trying show-level series fallback for {imdb_id} → {fallback_url}")
+                logger.info(
+                    f"Trying show-level series fallback for {imdb_id} → {fallback_url}"
+                )
                 resp = await client.get(fallback_url, timeout=20.0, follow_redirects=True)
                 if resp.status_code != 200:
-                    logger.warning(f"Scraper series fallback also returned {resp.status_code} for {imdb_id}")
+                    logger.warning(
+                        f"Scraper series fallback also returned {resp.status_code} "
+                        f"for {imdb_id}"
+                    )
                     return FETCH_FAILED
             else:
                 return FETCH_FAILED
@@ -271,6 +319,7 @@ async def fetch_quality_from_scraper(
             set_cached_quality(imdb_id, tokens, release_date)
             return tokens
 
+        # Aggregate tokens across the top 5 streams (same logic as AIOStreams).
         seen: set[str] = set()
         for stream in streams[:5]:
             seen |= _tokens_from_stremio_stream(
@@ -309,14 +358,25 @@ async def fetch_quality_from_scraper(
 # ---------------------------------------------------------------------------
 # Badge image cache
 # ---------------------------------------------------------------------------
+# The top-of-poster gradient ensures the background is always dark, so we
+# always use the "light" variant.  The dark variant and luminosity sampling
+# are therefore removed.
+#
+# Badges are cached in memory as pre-resized RGBA Images, keyed by
+# (token, height).  The default height is pre-warmed at import time so the
+# very first request never pays the resize cost.
 
 BadgeItem = tuple[Image.Image | None, str]
 
+# Raw (un-resized) badge images, loaded once from disk.
 _RAW_BADGES: dict[str, Image.Image] = {}
+
+# Resized badge cache: (token, height) -> Image
 _BADGE_CACHE: dict[tuple[str, int], Image.Image] = {}
 
 
 def _load_raw_badge(token: str) -> Image.Image | None:
+    """Load and tightly crop the raw badge PNG for *token* (light variant only)."""
     stem = BADGE_FILES.get(token)
     if not stem:
         return None
@@ -338,6 +398,7 @@ def _load_raw_badge(token: str) -> Image.Image | None:
 
 
 def _warm_badge_cache(height: int) -> None:
+    """Pre-resize all known badges at *height* and store in _BADGE_CACHE."""
     for token in BADGE_FILES:
         raw = _RAW_BADGES.get(token)
         if raw is None:
@@ -348,6 +409,7 @@ def _warm_badge_cache(height: int) -> None:
 
 
 def _init_badge_cache() -> None:
+    """Load all raw badges and pre-warm the cache at the default badge height."""
     for token in BADGE_FILES:
         img = _load_raw_badge(token)
         if img is not None:
@@ -357,10 +419,15 @@ def _init_badge_cache() -> None:
     logger.info(f"Badge cache warmed: {len(_BADGE_CACHE)} entries at {BADGE_HEIGHT}px")
 
 
+# Run at import time (cheap — just disk reads + one resize pass per badge).
 _init_badge_cache()
 
 
 def get_resized_badge(token: str, height: int) -> Image.Image | None:
+    """
+    Return a cached resized badge for *token* at *height* pixels tall.
+    Resizes and caches on first miss for a new height.
+    """
     key = (token, height)
     cached = _BADGE_CACHE.get(key)
     if cached is not None:
@@ -382,19 +449,32 @@ def get_resized_badge(token: str, height: int) -> Image.Image | None:
 # ---------------------------------------------------------------------------
 
 def _resize_premultiplied(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Resize an RGBA image with premultiplied-alpha compositing and edge sharpening.
+
+    Pillow's LANCZOS filter averages pixels without accounting for alpha, so
+    fully-transparent edge pixels bleed their RGB values into the result,
+    producing coloured fringes on anti-aliased edges.  Premultiplying before
+    the resize and un-premultiplying after eliminates this artefact.
+
+    A mild unsharp mask is applied after resize to recover crispness lost
+    during heavy downscaling (the combined badges go from ~112 → 40-60 px).
+    The sharpening is applied only to the visible (non-transparent) region so
+    it doesn't introduce ringing at the alpha boundary.
+    """
     import numpy as np
     from PIL import ImageFilter
-    arr = np.array(img, dtype=np.float32)
-    alpha = arr[..., 3:4] / 255.0
-    arr[..., :3] *= alpha
+    arr = np.array(img, dtype=np.float32)          # H×W×4, values 0–255
+    alpha = arr[..., 3:4] / 255.0                  # normalised alpha, H×W×1
+    arr[..., :3] *= alpha                           # premultiply RGB
     pre = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
     pre = pre.resize(size, Image.LANCZOS)
     arr2 = np.array(pre, dtype=np.float32)
     alpha2 = arr2[..., 3:4] / 255.0
     nonzero = alpha2[..., 0] > 0
-    arr2[nonzero, :3] /= alpha2[nonzero]
+    arr2[nonzero, :3] /= alpha2[nonzero]           # un-premultiply where visible
     result = Image.fromarray(np.clip(arr2, 0, 255).astype(np.uint8), "RGBA")
 
+    # Sharpen only the RGB channels; leave alpha intact to avoid edge ringing.
     r, g, b, a = result.split()
     rgb = Image.merge("RGB", (r, g, b))
     rgb = rgb.filter(ImageFilter.UnsharpMask(radius=0.6, percent=120, threshold=2))
@@ -406,12 +486,21 @@ def _resize_premultiplied(img: Image.Image, size: tuple[int, int]) -> Image.Imag
 # Combined badge (badges/combined/) — display mode 5
 # ---------------------------------------------------------------------------
 
+# Cache keyed by (res_key, src_key, vis_key, height).
 _COMBINED_CACHE: dict[tuple[str, str, str, int], Image.Image | None] = {}
 
 
 def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
+    """Return a single pre-composed badge from badges/combined/ for the given
+    quality token list.
+
+    Resolution (4K / 1080P) and source (REMUX / WEBDL) must both be present;
+    if either is missing the function returns None and nothing is drawn.
+    The visual tag (DV / HDR) is optional and defaults to 'sdr'.
+    """
     token_set = set(tokens)
 
+    # Resolution
     if "4K" in token_set:
         res = "4k"
     elif "1080P" in token_set:
@@ -419,6 +508,7 @@ def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
     else:
         return None
 
+    # Source
     if "REMUX" in token_set:
         src = "remux"
     elif "WEBDL" in token_set:
@@ -426,6 +516,7 @@ def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
     else:
         return None
 
+    # Visual tag — absent means SDR
     if "DV" in token_set:
         vis = "dv"
     elif "HDR10+" in token_set or "HDR10" in token_set:
@@ -444,6 +535,10 @@ def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
     png_path = stem + ".png"
 
     if os.path.exists(svg_path):
+        # Rasterise the SVG at 2× the target height then downscale with
+        # premultiplied LANCZOS.  Oversampling lets Cairo anti-alias curves
+        # and thin strokes properly before the final downscale, removing the
+        # jagged border edges that appear when rendering directly at small sizes.
         try:
             import cairosvg, io
             oversample = height * 2
@@ -456,6 +551,7 @@ def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
             logger.error(f"Combined badge SVG render failed ({svg_path}): {exc}")
 
     elif os.path.exists(png_path):
+        # Fall back to PNG with premultiplied resize + sharpening.
         try:
             raw = Image.open(png_path).convert("RGBA")
             bbox = raw.getbbox()
@@ -475,7 +571,7 @@ def get_combined_badge(tokens: list[str], height: int) -> Image.Image | None:
 
 
 # ---------------------------------------------------------------------------
-# Fallback font
+# Fallback font (loaded once at module level)
 # ---------------------------------------------------------------------------
 
 try:
@@ -507,6 +603,7 @@ def render_badges_left(
             image.paste(badge_img, (x, y_top), badge_img)
             x += badge_img.width + badge_gap
         else:
+            # Text fallback
             bb = draw.textbbox((0, 0), label, font=_FALLBACK_FONT)
             text_h = bb[3] - bb[1]
             ty = y_top + (badge_height - text_h) // 2
